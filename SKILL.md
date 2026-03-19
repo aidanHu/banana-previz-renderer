@@ -1,6 +1,10 @@
 ---
 name: banana-previz-renderer
-description: Generate production images with Banana Pro style image APIs using the structured JSON from gemini-video-story-adapter. Use when the user already has analysis output (asset_library and storyboard_script) and wants a pure image-generation pipeline: generate角色/道具/场景图 first, review them, then generate分镜图 with asset references and 1k resolution quality gate.
+description: >
+  Generate production images with Banana Pro style image APIs using the structured JSON from
+  gemini-video-story-adapter. Use when the user already has analysis output (asset_library and
+  storyboard_script) and wants a pure image-generation pipeline: generate角色/道具/场景图 first, review them,
+  then generate分镜图 with asset references and 1k resolution quality gate.
 ---
 
 # Banana Previz Renderer
@@ -22,7 +26,9 @@ description: Generate production images with Banana Pro style image APIs using t
 角色基图参考（如 Rumi/Jinu/Mira）：
 
 - 不需要先转 URL。
-- 直接提供映射 JSON（可混用本地路径和 URL，示例见 [identity-map.example.json](./assets/identity-map.example.json)）。
+- 默认共享映射文件路径是 `~/.codex/skills/banana-previz-renderer/assets/identity-map.json`。
+- repo 内也附带 `./assets/character-refs/*` 和 `./assets/identity-map.json`，方便本地开发、迁移和核对。
+- 也可以显式提供 `--identity-map-json`（可混用本地路径和 URL，示例见 [identity-map.example.json](./assets/identity-map.example.json)）。
 - 脚本会在对应资产生成请求里自动附加这些参考图。
 
 引用链路（Gemini 原生）：
@@ -40,12 +46,36 @@ description: Generate production images with Banana Pro style image APIs using t
 可选：
 
 - `YUNWU_BASE_URL`（默认 `https://yunwu.ai`）
+- `BANANA_IDENTITY_MAP_JSON`（覆盖默认共享 identity-map 路径）
 - `--model`（默认 `gemini-3.1-flash-image-preview`）
 - `--image-size`（默认 `1K`）
-- `--identity-map-json`（角色/道具基础图映射，可选）
-- `--concurrency`（并发生成线程数，默认 `1` 串行）
+- `--identity-map-json`（角色/道具基础图映射，可选；不传时默认读取共享路径）
+- `--concurrency`（并发生成线程数，默认 `3`）
 - `--max-retries`（最大重试次数，仅重试失败的图片，默认 `2`）
 - `--resolution-rule`（默认 `long-edge`，更适配 16:9 和 9:16）
+- `--asset-id`（定向重生成指定资产，可重复）
+- `--character`（按角色名定向重生成，如 `Rumi` / `Jinu`，可重复，也支持逗号分隔）
+- `--shot-id`（定向重生成指定分镜，可重复，也支持逗号分隔；支持 `shot_003` 或直接 `3`）
+- `--force-rerun`（忽略已有成功结果，强制重跑所选 phase 的全部任务）
+
+## Execution Discipline
+
+生图 Pipeline 属于**多任务批量请求**，总耗时取决于图片数量和并发度。
+
+- **预期耗时**: 单张图片 15-60 秒，整个 assets phase（8-15 张图）在 concurrency=3 下约 2-5 分钟。
+- **Lock file**: 脚本在输出目录写入 `.run_banana_pipeline.lock`（含 PID），阻止同目录的并发实例。
+- **Heartbeat**: Pipeline 执行期间每 10 秒输出 `[heartbeat] assets: 3/12 完成 (已耗时 45s)` 格式的进度信息到 stderr。
+- **HTTP 错误分类**: `429/5xx` 标记为可重试，由 `--max-retries` 控制重试次数；`4xx`（如 400 违规内容）标记为 `non_retryable`，绝不重试，避免浪费 Token。
+- **用户可见状态**:
+  - `ok`: 已成功生成
+  - `failed`: 未成功，附带 `failure_reason`
+- **内部重试策略**:
+  - 明确可重试失败：仅这类会自动重试
+  - 明确不可重试失败：如 4xx，不自动重试
+  - 状态不明确：如超时/断连/响应异常，不自动重试，避免重复提交
+- **恢复策略**: 默认模式是 `failed_only`。重新启动同一个输出目录时，只会自动续跑“明确可重试失败”的任务；已成功任务和状态不明确任务都会被跳过，除非你显式点名重生或使用 `--force-rerun`。
+- **定向重生成**: 如果显式传了 `--asset-id` / `--character` / `--shot-id`，这些目标会被强制刷新，即使之前成功过，也只会重跑你点名的那些。
+- **调用者禁令**: 脚本已内置重试。外部调用者不应在 pipeline 运行期间重复启动实例。
 
 默认模型与画质：
 
@@ -87,6 +117,8 @@ description: Generate production images with Banana Pro style image APIs using t
 
 主脚本： [run_banana_pipeline.py](./scripts/run_banana_pipeline.py)
 
+自然语言入口： [run_banana_command.py](./scripts/run_banana_command.py)
+
 示例：
 
 ```bash
@@ -97,7 +129,6 @@ export YUNWU_BASE_URL="https://yunwu.ai"
 python3 ./scripts/run_banana_pipeline.py \
   --analysis-json ./analysis.json \
   --phase assets \
-  --identity-map-json ./identity-map.json \
   --concurrency 4 \
   --style photoreal-hq \
   --model gemini-3.1-flash-image-preview \
@@ -112,6 +143,33 @@ python3 ./scripts/run_banana_pipeline.py \
   --model gemini-3.1-flash-image-preview \
   --image-size 1K \
   --output-dir ./outputs
+
+# 3) 只重生成指定角色（即使该角色之前成功过）
+python3 ./scripts/run_banana_pipeline.py \
+  --analysis-json ./analysis.json \
+  --phase assets \
+  --output-dir ./outputs \
+  --character Rumi,Jinu
+
+# 4) 只重生成指定分镜
+python3 ./scripts/run_banana_pipeline.py \
+  --analysis-json ./analysis.json \
+  --phase storyboard \
+  --assets-json ./outputs/assets.generated.json \
+  --output-dir ./outputs \
+  --shot-id shot_003,7
+
+# 5) 用自然语言触发定向重生成
+python3 ./scripts/run_banana_command.py \
+  --analysis-json ./analysis.json \
+  --output-dir ./outputs \
+  "重生 Rumi 和 3、7 号镜头"
+
+# 6) 用自然语言全量重跑全部分镜
+python3 ./scripts/run_banana_command.py \
+  --analysis-json ./analysis.json \
+  --output-dir ./outputs \
+  "全量重跑所有分镜"
 ```
 
 ## Output Files
@@ -119,4 +177,15 @@ python3 ./scripts/run_banana_pipeline.py \
 - `assets.generated.json`
 - `storyboard.generated.json`
 
-输出 JSON 中包含每张图的 `image_path`、宽高和是否通过 1k 质量门。
+输出 JSON 中包含每张图的 `image_path`、宽高和是否通过 1k 质量门，并额外记录：
+
+- `resume_mode`：`failed_only` 或 `force_rerun`
+- `target_asset_ids` / `target_shot_ids`：本次定向重生成的目标
+- `skipped_existing_ok`：本次跳过的历史成功项数量
+
+落盘图片命名规则：
+
+- 资产图：`001_角色_Rumi.png`、`009_场景_水族馆.png`
+- 分镜图：`001_shot_001.png`
+- 若同名文件已存在，会自动追加 `__v2`、`__v3`，不覆盖旧文件
+- 输出 JSON 会按最终文件名排序，便于和磁盘目录直接对照

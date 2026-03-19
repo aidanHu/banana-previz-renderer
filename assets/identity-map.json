@@ -1,0 +1,23 @@
+{
+  "@角色_Abby": [
+    ".agents/skills/banana-previz-renderer/assets/character-refs/ABBY.png"
+  ],
+  "@角色_Jinu": [
+    ".agents/skills/banana-previz-renderer/assets/character-refs/JINU.png"
+  ],
+  "@角色_Mira": [
+    ".agents/skills/banana-previz-renderer/assets/character-refs/MIRA.png"
+  ],
+  "@角色_Mystery": [
+    ".agents/skills/banana-previz-renderer/assets/character-refs/MYSTERY.jpeg"
+  ],
+  "@角色_Romance": [
+    ".agents/skills/banana-previz-renderer/assets/character-refs/ROMANCE.jpeg"
+  ],
+  "@角色_Rumi": [
+    ".agents/skills/banana-previz-renderer/assets/character-refs/RUMI.png"
+  ],
+  "@角色_Zoey": [
+    ".agents/skills/banana-previz-renderer/assets/character-refs/ZOEY.png"
+  ]
+}
