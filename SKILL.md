@@ -44,6 +44,7 @@ description: Generate production images with Banana Pro style image APIs using t
 - `--image-size`（默认 `1K`）
 - `--identity-map-json`（角色/道具基础图映射，可选）
 - `--concurrency`（并发生成线程数，默认 `1` 串行）
+- `--max-retries`（最大重试次数，仅重试失败的图片，默认 `2`）
 - `--resolution-rule`（默认 `long-edge`，更适配 16:9 和 9:16）
 
 默认模型与画质：

@@ -73,7 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--concurrency",
         type=int,
-        default=1,
+        default=3,
         help="Parallel workers for image generation. 1 means serial.",
     )
     parser.add_argument("--asset-aspect-ratio", default="16:9", help="Aspect ratio for assets.")
@@ -97,6 +97,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=90,
         help="Per-request timeout seconds. Timed-out jobs are marked failed and pipeline continues.",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=2,
+        help="最大重试次数，仅重试失败的图片。默认 2 次。",
     )
     return parser.parse_args()
 
@@ -355,12 +361,61 @@ def build_asset_type_constraints(asset_type: str) -> str:
     return ""
 
 
+def _run_jobs_with_retry(
+    jobs: list[tuple[int, dict]],
+    worker_fn,
+    args: argparse.Namespace,
+    id_key: str,
+) -> list[dict]:
+    """通用重试调度器：仅重试失败的 job，成功的保持不变。"""
+    results: dict[str, dict] = {}
+    pending = list(jobs)
+    max_retries = getattr(args, "max_retries", 2)
+
+    for attempt in range(1 + max_retries):
+        if not pending:
+            break
+        if attempt > 0:
+            print(f"  ↻ 第 {attempt} 次重试，共 {len(pending)} 个失败项...")
+
+        round_results = []
+        if args.concurrency <= 1:
+            for idx, job in pending:
+                round_results.append(worker_fn(idx, job))
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as ex:
+                futures = {ex.submit(worker_fn, idx, job): (idx, job) for idx, job in pending}
+                for fut in concurrent.futures.as_completed(futures):
+                    round_results.append(fut.result())
+
+        # 记录本轮结果，成功的覆盖之前失败的
+        next_pending = []
+        for res in round_results:
+            item_id = res.get(id_key, "")
+            if res.get("status") == "failed":
+                res["retry_count"] = attempt
+                results[item_id] = res
+                # 找到原始 (idx, job) 以便下轮重试
+                for idx, job in pending:
+                    orig_id = job.get("id") or job.get("shot_id") or ""
+                    if orig_id == item_id:
+                        next_pending.append((idx, job))
+                        break
+            else:
+                res["retry_count"] = attempt
+                results[item_id] = res
+        pending = next_pending
+
+    # 按 id_key 排序返回
+    return sorted(results.values(), key=lambda x: x.get(id_key, ""))
+
+
 def run_assets_phase(args: argparse.Namespace, analysis: dict, token: str, output_dir: Path) -> dict:
     jobs = build_asset_jobs(analysis)
     identity_map = load_identity_map(args.identity_map_json)
     style_suffix = build_style_suffix(args)
-    generated = []
-    image_dir = output_dir / "images" / "assets"
+    # 简化输出目录：去掉 images/ 中间层
+    image_dir = output_dir / "assets"
     def worker(idx: int, job: dict) -> dict:
         type_constraints = build_asset_type_constraints(job.get("type", ""))
         prompt = (
@@ -433,15 +488,7 @@ def run_assets_phase(args: argparse.Namespace, analysis: dict, token: str, outpu
             }
 
     indexed = list(enumerate(jobs, start=1))
-    if args.concurrency <= 1:
-        for idx, job in indexed:
-            generated.append(worker(idx, job))
-    else:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as ex:
-            futures = [ex.submit(worker, idx, job) for idx, job in indexed]
-            for fut in concurrent.futures.as_completed(futures):
-                generated.append(fut.result())
-        generated.sort(key=lambda x: x["id"])
+    generated = _run_jobs_with_retry(indexed, worker, args, id_key="id")
     return {
         "phase": "assets",
         "provider": "gemini-generateContent",
@@ -461,8 +508,8 @@ def run_storyboard_phase(
 ) -> dict:
     jobs = build_storyboard_jobs(analysis, assets_generated)
     style_suffix = build_style_suffix(args)
-    generated = []
-    image_dir = output_dir / "images" / "storyboard"
+    # 简化输出目录：去掉 images/ 中间层
+    image_dir = output_dir / "storyboard"
     def worker(idx: int, job: dict) -> dict:
         prompt = (
             f"{job['prompt']}\n\n"
@@ -523,15 +570,7 @@ def run_storyboard_phase(
             }
 
     indexed = list(enumerate(jobs, start=1))
-    if args.concurrency <= 1:
-        for idx, job in indexed:
-            generated.append(worker(idx, job))
-    else:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as ex:
-            futures = [ex.submit(worker, idx, job) for idx, job in indexed]
-            for fut in concurrent.futures.as_completed(futures):
-                generated.append(fut.result())
-        generated.sort(key=lambda x: x["shot_id"])
+    generated = _run_jobs_with_retry(indexed, worker, args, id_key="shot_id")
     return {
         "phase": "storyboard",
         "provider": "gemini-generateContent",
