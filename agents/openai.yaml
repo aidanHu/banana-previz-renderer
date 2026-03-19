@@ -1,0 +1,4 @@
+interface:
+  display_name: "Banana Previz Renderer"
+  short_description: "按分析结果生成资产图与分镜图的纯生图技能"
+  default_prompt: "Use $banana-previz-renderer to render character/prop/scene assets first, then storyboard frames from a gemini-video-story-adapter JSON."
