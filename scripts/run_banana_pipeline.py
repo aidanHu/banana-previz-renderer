@@ -370,7 +370,7 @@ def next_available_image_path(out_dir: Path, name_prefix: str, ext: str) -> Path
         return candidate
     counter = 2
     while True:
-        candidate = out_dir / f"{base}__v{counter}{ext}"
+        candidate = out_dir / f"{base}_{counter}{ext}"
         if not candidate.exists():
             return candidate
         counter += 1
@@ -382,6 +382,10 @@ def sort_generated_items(items: list[dict], id_key: str) -> list[dict]:
         return (image_name, str(item.get(id_key, "")))
 
     return sorted(items, key=sort_key)
+
+
+def canonical_index_map(ids: list[str]) -> dict[str, int]:
+    return {item_id: idx for idx, item_id in enumerate(ids, start=1)}
 
 
 def read_image_dimensions(path: Path) -> tuple[int | None, int | None]:
@@ -698,7 +702,7 @@ def build_asset_type_constraints(asset_type: str) -> str:
     if "角色" in t:
         return "背景要求：纯白背景（#FFFFFF），仅保留单角色主体，不得出现任何场景元素、文字贴纸或其他实体。"
     if "道具" in t:
-        return "背景要求：纯白背景（#FFFFFF），仅保留单道具主体，不得出现桌面、手部或任何场景元素。"
+        return "背景要求：纯白背景（#FFFFFF），仅保留单道具主体，不得出现人体、脸部、手部、模特、衣架、桌面或任何场景元素；如果是服装类道具，必须以单件服装展示，不可穿在人身上。"
     if "场景" in t:
         return "场景要求：环境内容丰富，层次清晰，光线明亮，色彩鲜艳。"
     return ""
@@ -769,7 +773,9 @@ def _run_jobs_with_retry(
 
 
 def run_assets_phase(args: argparse.Namespace, analysis: dict, token: str, output_dir: Path) -> dict:
-    jobs, explicit_target_ids = filter_asset_jobs(build_asset_jobs(analysis), args)
+    all_jobs = build_asset_jobs(analysis)
+    job_index_map = canonical_index_map([str(job.get("id", "")) for job in all_jobs if str(job.get("id", "")).strip()])
+    jobs, explicit_target_ids = filter_asset_jobs(all_jobs, args)
     if (args.asset_id or args.character) and not jobs:
         raise ValueError("No asset jobs matched --asset-id/--character selectors.")
     identity_map = load_identity_map(args.identity_map_json)
@@ -849,7 +855,11 @@ def run_assets_phase(args: argparse.Namespace, analysis: dict, token: str, outpu
                 reference_inputs=reference_paths,
             )
             images = extract_inline_images(resp)
-            image_path, width, height = save_first_image(images, image_dir, image_basename(idx, job["id"]))
+            image_path, width, height = save_first_image(
+                images,
+                image_dir,
+                image_basename(job_index_map.get(job["id"], idx), job["id"]),
+            )
             return finalize_result({
                 "id": job["id"],
                 "type": job["type"],
@@ -925,7 +935,11 @@ def run_assets_phase(args: argparse.Namespace, analysis: dict, token: str, outpu
                 "resolution_ok": None,
             }, "unknown", str(exc))
 
-    indexed = [(idx, job) for idx, job in enumerate(jobs, start=1) if job["id"] not in done_ids]
+    indexed = [
+        (job_index_map.get(job["id"], idx), job)
+        for idx, job in enumerate(jobs, start=1)
+        if job["id"] not in done_ids
+    ]
     if existing_results:
         print(
             f"[info] assets phase 恢复已有结果：模式={'force_rerun' if args.force_rerun else 'failed_only'}，"
@@ -966,7 +980,11 @@ def run_assets_phase(args: argparse.Namespace, analysis: dict, token: str, outpu
 def run_storyboard_phase(
     args: argparse.Namespace, analysis: dict, assets_generated: dict, token: str, output_dir: Path
 ) -> dict:
-    jobs, explicit_target_ids = filter_storyboard_jobs(build_storyboard_jobs(analysis, assets_generated), args)
+    all_jobs = build_storyboard_jobs(analysis, assets_generated)
+    job_index_map = canonical_index_map(
+        [str(job.get("shot_id", "")) for job in all_jobs if str(job.get("shot_id", "")).strip()]
+    )
+    jobs, explicit_target_ids = filter_storyboard_jobs(all_jobs, args)
     if args.shot_id and not jobs:
         raise ValueError("No storyboard jobs matched --shot-id selectors.")
     style_suffix = build_style_suffix(args)
@@ -1039,7 +1057,11 @@ def run_storyboard_phase(
                 reference_inputs=job["reference_inputs"],
             )
             images = extract_inline_images(resp)
-            image_path, width, height = save_first_image(images, image_dir, image_basename(idx, job["shot_id"]))
+            image_path, width, height = save_first_image(
+                images,
+                image_dir,
+                image_basename(job_index_map.get(job["shot_id"], idx), job["shot_id"]),
+            )
             return finalize_result({
                 "shot_id": job["shot_id"],
                 "prompt": prompt,
@@ -1100,7 +1122,11 @@ def run_storyboard_phase(
                 "resolution_ok": None,
             }, "unknown", str(exc))
 
-    indexed = [(idx, job) for idx, job in enumerate(jobs, start=1) if job["shot_id"] not in done_ids]
+    indexed = [
+        (job_index_map.get(job["shot_id"], idx), job)
+        for idx, job in enumerate(jobs, start=1)
+        if job["shot_id"] not in done_ids
+    ]
     if existing_results:
         print(
             f"[info] storyboard phase 恢复已有结果：模式={'force_rerun' if args.force_rerun else 'failed_only'}，"
