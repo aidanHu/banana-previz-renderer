@@ -43,6 +43,57 @@ REFERENCE_ROLE_NAMES = [
     "Mystery",
     "Romance",
 ]
+ASSET_TAG_TOKEN_RE = re.compile(r"@[^\s,，。；;:：()（）]+")
+CHILD_KEYWORDS = (
+    "儿童",
+    "小孩",
+    "男孩",
+    "女孩",
+    "幼儿",
+    "宝宝",
+    "baby",
+    "child",
+    "kid",
+    "toddler",
+    "teen",
+)
+HIGH_RISK_REPLACEMENTS = [
+    (re.compile(r"(极度血腥|血腥|断肢|内脏|开膛|爆浆|尸块)"), "夸张的软体物理跌倒"),
+    (re.compile(r"(城市毁灭|真实城市毁灭|核爆|核弹|恐怖袭击|恐袭|911|地震废墟|海啸|空难)"), "科幻奇幻环境中的超现实安全演绎"),
+]
+BODY_HORROR_SAFETY_SUFFIX = (
+    "Ensure anatomically correct human proportions, natural facial features, "
+    "no multiple limbs, no melted flesh, visually pleasing and safe aesthetic."
+)
+CRASH_SCENE_KEYWORDS = (
+    "撞",
+    "车祸",
+    "碰撞",
+    "追尾",
+    "crash",
+    "collision",
+    "impact",
+    "explosion",
+)
+CRASH_SCENE_SAFETY_SUFFIX = (
+    "surreal representation, soft body physics, jelly car physics, crash test dummy aesthetic, "
+    "exaggerated cartoon physics, non-realistic impact, safe simulation"
+)
+CHILD_SAFETY_SUFFIX = (
+    "natural positive facial expression, bright clear eyes, no distorted facial features, "
+    "no scary grimaces, calming and pleasant look. "
+    "anatomically correct child limbs, accurate number of fingers and toes, natural posture, "
+    "no broken bone physics. "
+    "brightly lit clean environment, vibrant colors, clear visibility, presence of adult supervision "
+    "context (e.g. blurry adult figure in background), no dark scary corners. "
+    "properly fitted modest clothing, fully covering torso, comfortable kid's apparel, non-revealing. "
+    "highly exaggerated magical effects, cartoonish dream-like action, safe and whimsical movement, "
+    "soft colorful particles."
+)
+GLOBAL_LIGHTING_SUFFIX = (
+    "abundant natural light, bright and clear lighting, vibrant and rich colors, highly detailed and rich "
+    "scene content, exquisite and nuanced character expressions and subtle fluid movements"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +357,142 @@ def resolve_identity_map_path(path: str | None) -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def style_descriptor_from_analysis(analysis: dict) -> str:
+    for key in ("style_descriptor", "global_style_descriptor", "styleDescriptor"):
+        value = str(analysis.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def asset_aliases(asset_tag: str) -> set[str]:
+    aliases = {asset_tag}
+    if not asset_tag.startswith("@"):
+        return aliases
+    body = asset_tag[1:]
+    if "_" not in body:
+        return aliases
+    _, raw_name = body.split("_", 1)
+    raw_name = raw_name.strip()
+    if not raw_name:
+        return aliases
+    aliases.add(f"@{raw_name}")
+    if asset_tag.startswith("@角色_"):
+        role_name = raw_name.split("_", 1)[0].strip()
+        if role_name:
+            aliases.add(f"@{role_name}")
+    return aliases
+
+
+def build_asset_prompt_lookup(analysis: dict) -> tuple[dict[str, str], dict[str, str]]:
+    canonical_prompts: dict[str, str] = {}
+    alias_to_asset: dict[str, str] = {}
+    for item in analysis.get("asset_library", []):
+        if not isinstance(item, dict):
+            continue
+        asset_tag = str(item.get("asset_tag", "")).strip()
+        prompt = str(item.get("full_prompt_string") or item.get("visual_anchor") or "").strip()
+        if not asset_tag or not prompt:
+            continue
+        canonical_prompts[asset_tag] = prompt
+        for alias in asset_aliases(asset_tag):
+            alias_to_asset.setdefault(alias, asset_tag)
+    return canonical_prompts, alias_to_asset
+
+
+def collect_referenced_asset_tags(prompt: str, alias_to_asset: dict[str, str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in ASSET_TAG_TOKEN_RE.findall(prompt):
+        asset_tag = alias_to_asset.get(token)
+        if asset_tag and asset_tag not in seen:
+            out.append(asset_tag)
+            seen.add(asset_tag)
+    return out
+
+
+def validate_asset_coverage(analysis: dict) -> tuple[dict[str, str], dict[str, str]]:
+    canonical_prompts, alias_to_asset = build_asset_prompt_lookup(analysis)
+    missing: list[str] = []
+    for shot in analysis.get("storyboard_script", []):
+        if not isinstance(shot, dict):
+            continue
+        shot_id = str(shot.get("shot_id", "")).strip() or "<unknown-shot>"
+        prompt = str(shot.get("first_frame_prompt") or shot.get("scela_prompt") or "").strip()
+        for token in ASSET_TAG_TOKEN_RE.findall(prompt):
+            if token not in alias_to_asset:
+                missing.append(f"{shot_id}: {token}")
+        raw_refs = shot.get("referenced_assets", [])
+        if not isinstance(raw_refs, list):
+            raw_refs = []
+        for raw_ref in raw_refs:
+            ref = str(raw_ref).strip()
+            if ref and ref not in canonical_prompts:
+                missing.append(f"{shot_id}: {ref}")
+    if missing:
+        joined = ", ".join(sorted(set(missing)))
+        raise ValueError(
+            "Undefined storyboard assets detected during pre-flight validation: "
+            f"{joined}. Add them to asset_library or fix the storyboard prompt."
+        )
+    return canonical_prompts, alias_to_asset
+
+
+def detect_child_safety_assets(analysis: dict) -> set[str]:
+    flagged: set[str] = set()
+    for item in analysis.get("asset_library", []):
+        if not isinstance(item, dict):
+            continue
+        asset_tag = str(item.get("asset_tag", "")).strip()
+        haystack = " ".join(
+            str(item.get(key, "") or "")
+            for key in ("asset_tag", "full_prompt_string", "visual_anchor", "asset_name", "description")
+        ).casefold()
+        if asset_tag and any(keyword.casefold() in haystack for keyword in CHILD_KEYWORDS):
+            flagged.add(asset_tag)
+    return flagged
+
+
+def sanitize_prompt_content(prompt: str, child_safety_enabled: bool) -> str:
+    normalized = prompt
+    for pattern, replacement in HIGH_RISK_REPLACEMENTS:
+        normalized = pattern.sub(replacement, normalized)
+    normalized = re.sub(r"(?i)\b(?:knife|gun)\b", "safe toy prop", normalized)
+
+    suffixes = [BODY_HORROR_SAFETY_SUFFIX]
+    lower = normalized.casefold()
+    if any(keyword.casefold() in lower for keyword in CRASH_SCENE_KEYWORDS):
+        suffixes.append(CRASH_SCENE_SAFETY_SUFFIX)
+    if child_safety_enabled:
+        normalized = re.sub(r"(?i)\bknife\b", "glowing foam sword", normalized)
+        normalized = re.sub(r"(?i)\bgun\b", "brightly colored plastic water gun", normalized)
+        suffixes.append(CHILD_SAFETY_SUFFIX)
+    return normalized.strip() + "\n\nSafety guardrails: " + " ".join(suffixes)
+
+
+def replace_storyboard_asset_tokens(prompt: str, alias_to_asset: dict[str, str], prompt_lookup: dict[str, str]) -> str:
+    ordered_aliases = sorted(alias_to_asset, key=len, reverse=True)
+    replaced = prompt
+    for alias in ordered_aliases:
+        asset_tag = alias_to_asset[alias]
+        full_prompt = prompt_lookup.get(asset_tag)
+        if not full_prompt or alias not in replaced:
+            continue
+        replaced = replaced.replace(alias, full_prompt)
+    return replaced
+
+
+def prompt_mentions_child_asset(prompt: str, referenced_assets: list[str], child_assets: set[str], alias_to_asset: dict[str, str]) -> bool:
+    for asset_tag in referenced_assets:
+        if asset_tag in child_assets:
+            return True
+    for token in ASSET_TAG_TOKEN_RE.findall(prompt):
+        asset_tag = alias_to_asset.get(token)
+        if asset_tag in child_assets:
+            return True
+    return False
 
 
 def load_existing_generated_items(path: Path, list_key: str, id_key: str) -> dict[str, dict]:
@@ -650,7 +837,12 @@ def filter_reference_inputs(asset_id: str, asset_type: str, identity_map: dict[s
     return refs
 
 
-def build_storyboard_jobs(analysis: dict, assets_generated: dict) -> list[dict]:
+def build_storyboard_jobs(
+    analysis: dict,
+    assets_generated: dict,
+    alias_to_asset: dict[str, str],
+    prompt_lookup: dict[str, str],
+) -> list[dict]:
     asset_ref_map = {}
     for item in assets_generated.get("generated_assets", []):
         aid = item.get("id")
@@ -667,11 +859,26 @@ def build_storyboard_jobs(analysis: dict, assets_generated: dict) -> list[dict]:
         prompt = shot.get("first_frame_prompt") or shot.get("scela_prompt")
         if not shot_id or not prompt:
             continue
+        referenced_assets = list(collect_referenced_asset_tags(str(prompt), alias_to_asset))
+        raw_refs = shot.get("referenced_assets", [])
+        if not isinstance(raw_refs, list):
+            raw_refs = []
+        for aid in raw_refs:
+            aid_str = str(aid).strip()
+            if aid_str and aid_str not in referenced_assets:
+                referenced_assets.append(aid_str)
         refs = []
-        for aid in shot.get("referenced_assets", []):
+        for aid in referenced_assets:
             if aid in asset_ref_map:
                 refs.extend(asset_ref_map[aid])
-        jobs.append({"shot_id": shot_id, "prompt": prompt, "reference_inputs": refs})
+        jobs.append(
+            {
+                "shot_id": shot_id,
+                "prompt": replace_storyboard_asset_tokens(str(prompt), alias_to_asset, prompt_lookup),
+                "reference_inputs": refs,
+                "referenced_assets": referenced_assets,
+            }
+        )
     return jobs
 
 
@@ -690,21 +897,32 @@ def filter_storyboard_jobs(jobs: list[dict], args: argparse.Namespace) -> tuple[
     return filtered, explicit_ids
 
 
-def build_style_suffix(args: argparse.Namespace) -> str:
+def build_style_suffix(args: argparse.Namespace, analysis: dict) -> str:
+    analysis_style = style_descriptor_from_analysis(analysis)
     style_text = STYLE_PRESETS.get(args.style, STYLE_PRESETS["photoreal-hq"])
-    if args.style_extra.strip():
-        return f"{style_text} {args.style_extra.strip()}"
-    return style_text
+    parts = [part for part in (analysis_style, style_text, args.style_extra.strip()) if part]
+    return " ".join(parts)
 
 
 def build_asset_type_constraints(asset_type: str) -> str:
     t = str(asset_type or "")
     if "角色" in t:
-        return "背景要求：纯白背景（#FFFFFF），仅保留单角色主体，不得出现任何场景元素、文字贴纸或其他实体。"
+        return (
+            "结构化出图要求：同一张图包含正面、侧面、背面和正面半身特写四视图；"
+            "纯白背景（#FFFFFF），仅保留单角色主体，不得出现任何场景元素、贴纸或其他人物；"
+            "左上角标注对应角色名且不得遮挡主体。"
+        )
     if "道具" in t:
-        return "背景要求：纯白背景（#FFFFFF），仅保留单道具主体，不得出现人体、脸部、手部、模特、衣架、桌面或任何场景元素；如果是服装类道具，必须以单件服装展示，不可穿在人身上。"
+        return (
+            "结构化出图要求：同一张图包含正视、侧视、俯视和特写细节四视图；"
+            "纯白背景（#FFFFFF），仅保留单道具主体，不得出现人体、手部、模特、桌面或未定义场景元素；"
+            "服装类道具必须以单件产品形态展示。"
+        )
     if "场景" in t:
-        return "场景要求：环境内容丰富，层次清晰，光线明亮，色彩鲜艳。"
+        return (
+            "结构化出图要求：同一张图包含全景、局部细节、俯视平面和核心地标特写四视图；"
+            "作为环境设计稿展示，不加入未定义角色或干扰元素。"
+        )
     return ""
 
 
@@ -772,14 +990,32 @@ def _run_jobs_with_retry(
     return sort_generated_items(list(results.values()), id_key)
 
 
-def run_assets_phase(args: argparse.Namespace, analysis: dict, token: str, output_dir: Path) -> dict:
+def run_preflight_validation(analysis: dict) -> dict:
+    prompt_lookup, alias_to_asset = validate_asset_coverage(analysis)
+    child_assets = detect_child_safety_assets(analysis)
+    return {
+        "prompt_lookup": prompt_lookup,
+        "alias_to_asset": alias_to_asset,
+        "child_assets": child_assets,
+        "child_safety_guardrail": bool(child_assets),
+    }
+
+
+def run_assets_phase(
+    args: argparse.Namespace,
+    analysis: dict,
+    token: str,
+    output_dir: Path,
+    preflight: dict,
+) -> dict:
     all_jobs = build_asset_jobs(analysis)
     job_index_map = canonical_index_map([str(job.get("id", "")) for job in all_jobs if str(job.get("id", "")).strip()])
     jobs, explicit_target_ids = filter_asset_jobs(all_jobs, args)
     if (args.asset_id or args.character) and not jobs:
         raise ValueError("No asset jobs matched --asset-id/--character selectors.")
     identity_map = load_identity_map(args.identity_map_json)
-    style_suffix = build_style_suffix(args)
+    style_suffix = build_style_suffix(args, analysis)
+    child_assets = set(preflight.get("child_assets", set()))
     assets_path = output_dir / "assets.generated.json"
     existing_results = load_existing_generated_items(assets_path, "generated_assets", "id")
     done_ids = set()
@@ -803,6 +1039,12 @@ def run_assets_phase(args: argparse.Namespace, analysis: dict, token: str, outpu
         "image_size": args.image_size,
         "min_resolution": args.min_resolution,
         "resolution_rule": args.resolution_rule,
+        "guardrails": {
+            "asset_coverage_validated": True,
+            "content_safety_scan": True,
+            "child_safety_guardrail": bool(child_assets),
+            "global_lighting_injected": True,
+        },
     }
 
     def persist(results_map: dict[str, dict]) -> None:
@@ -820,12 +1062,15 @@ def run_assets_phase(args: argparse.Namespace, analysis: dict, token: str, outpu
 
     def worker(idx: int, job: dict) -> dict:
         type_constraints = build_asset_type_constraints(job.get("type", ""))
-        prompt = (
+        child_safety_enabled = job["id"] in child_assets
+        prompt_base = (
             f"{job['prompt']}\n\n"
             f"{type_constraints}\n"
             f"画面比例：{args.asset_aspect_ratio}。\n"
+            f"光影质量基底：{GLOBAL_LIGHTING_SUFFIX}\n"
             f"风格要求：{style_suffix}"
         )
+        prompt = sanitize_prompt_content(prompt_base, child_safety_enabled)
         reference_paths = filter_reference_inputs(job["id"], str(job.get("type", "")), identity_map)
         if args.dry_run:
             return finalize_result({
@@ -836,6 +1081,7 @@ def run_assets_phase(args: argparse.Namespace, analysis: dict, token: str, outpu
                 "aspect_ratio": args.asset_aspect_ratio,
                 "image_size": args.image_size,
                 "reference_inputs": reference_paths,
+                "child_safety_guardrail": child_safety_enabled,
                 "image_path": "",
                 "image_url": "",
                 "width": None,
@@ -868,6 +1114,7 @@ def run_assets_phase(args: argparse.Namespace, analysis: dict, token: str, outpu
                 "aspect_ratio": args.asset_aspect_ratio,
                 "image_size": args.image_size,
                 "reference_inputs": reference_paths,
+                "child_safety_guardrail": child_safety_enabled,
                 "image_path": image_path,
                 "image_url": "",
                 "width": width,
@@ -883,6 +1130,7 @@ def run_assets_phase(args: argparse.Namespace, analysis: dict, token: str, outpu
                 "aspect_ratio": args.asset_aspect_ratio,
                 "image_size": args.image_size,
                 "reference_inputs": reference_paths,
+                "child_safety_guardrail": child_safety_enabled,
                 "image_path": "",
                 "image_url": "",
                 "width": None,
@@ -898,6 +1146,7 @@ def run_assets_phase(args: argparse.Namespace, analysis: dict, token: str, outpu
                 "aspect_ratio": args.asset_aspect_ratio,
                 "image_size": args.image_size,
                 "reference_inputs": reference_paths,
+                "child_safety_guardrail": child_safety_enabled,
                 "image_path": "",
                 "image_url": "",
                 "width": None,
@@ -913,6 +1162,7 @@ def run_assets_phase(args: argparse.Namespace, analysis: dict, token: str, outpu
                 "aspect_ratio": args.asset_aspect_ratio,
                 "image_size": args.image_size,
                 "reference_inputs": reference_paths,
+                "child_safety_guardrail": child_safety_enabled,
                 "image_path": "",
                 "image_url": "",
                 "width": None,
@@ -928,6 +1178,7 @@ def run_assets_phase(args: argparse.Namespace, analysis: dict, token: str, outpu
                 "aspect_ratio": args.asset_aspect_ratio,
                 "image_size": args.image_size,
                 "reference_inputs": reference_paths,
+                "child_safety_guardrail": child_safety_enabled,
                 "image_path": "",
                 "image_url": "",
                 "width": None,
@@ -978,16 +1229,24 @@ def run_assets_phase(args: argparse.Namespace, analysis: dict, token: str, outpu
 
 
 def run_storyboard_phase(
-    args: argparse.Namespace, analysis: dict, assets_generated: dict, token: str, output_dir: Path
+    args: argparse.Namespace,
+    analysis: dict,
+    assets_generated: dict,
+    token: str,
+    output_dir: Path,
+    preflight: dict,
 ) -> dict:
-    all_jobs = build_storyboard_jobs(analysis, assets_generated)
+    prompt_lookup = dict(preflight.get("prompt_lookup", {}))
+    alias_to_asset = dict(preflight.get("alias_to_asset", {}))
+    child_assets = set(preflight.get("child_assets", set()))
+    all_jobs = build_storyboard_jobs(analysis, assets_generated, alias_to_asset, prompt_lookup)
     job_index_map = canonical_index_map(
         [str(job.get("shot_id", "")) for job in all_jobs if str(job.get("shot_id", "")).strip()]
     )
     jobs, explicit_target_ids = filter_storyboard_jobs(all_jobs, args)
     if args.shot_id and not jobs:
         raise ValueError("No storyboard jobs matched --shot-id selectors.")
-    style_suffix = build_style_suffix(args)
+    style_suffix = build_style_suffix(args, analysis)
     storyboard_path = output_dir / "storyboard.generated.json"
     existing_results = load_existing_generated_items(storyboard_path, "generated_storyboard", "shot_id")
     done_ids = set()
@@ -1011,6 +1270,13 @@ def run_storyboard_phase(
         "image_size": args.image_size,
         "min_resolution": args.min_resolution,
         "resolution_rule": args.resolution_rule,
+        "guardrails": {
+            "asset_coverage_validated": True,
+            "content_safety_scan": True,
+            "child_safety_guardrail": bool(child_assets),
+            "global_lighting_injected": True,
+            "storyboard_prompt_replaced": True,
+        },
     }
 
     def persist(results_map: dict[str, dict]) -> None:
@@ -1027,11 +1293,19 @@ def run_storyboard_phase(
         )
 
     def worker(idx: int, job: dict) -> dict:
-        prompt = (
+        child_safety_enabled = prompt_mentions_child_asset(
+            str(job["prompt"]),
+            list(job.get("referenced_assets", [])),
+            child_assets,
+            alias_to_asset,
+        )
+        prompt_base = (
             f"{job['prompt']}\n\n"
             f"画面比例：{args.storyboard_aspect_ratio}。\n"
+            f"光影质量基底：{GLOBAL_LIGHTING_SUFFIX}\n"
             f"风格要求：{style_suffix}"
         )
+        prompt = sanitize_prompt_content(prompt_base, child_safety_enabled)
         if args.dry_run:
             return finalize_result({
                 "shot_id": job["shot_id"],
@@ -1039,6 +1313,8 @@ def run_storyboard_phase(
                 "aspect_ratio": args.storyboard_aspect_ratio,
                 "image_size": args.image_size,
                 "reference_inputs": job["reference_inputs"],
+                "referenced_assets": job.get("referenced_assets", []),
+                "child_safety_guardrail": child_safety_enabled,
                 "image_path": "",
                 "width": None,
                 "height": None,
@@ -1068,6 +1344,8 @@ def run_storyboard_phase(
                 "aspect_ratio": args.storyboard_aspect_ratio,
                 "image_size": args.image_size,
                 "reference_inputs": job["reference_inputs"],
+                "referenced_assets": job.get("referenced_assets", []),
+                "child_safety_guardrail": child_safety_enabled,
                 "image_path": image_path,
                 "width": width,
                 "height": height,
@@ -1080,6 +1358,8 @@ def run_storyboard_phase(
                 "aspect_ratio": args.storyboard_aspect_ratio,
                 "image_size": args.image_size,
                 "reference_inputs": job["reference_inputs"],
+                "referenced_assets": job.get("referenced_assets", []),
+                "child_safety_guardrail": child_safety_enabled,
                 "image_path": "",
                 "width": None,
                 "height": None,
@@ -1092,6 +1372,8 @@ def run_storyboard_phase(
                 "aspect_ratio": args.storyboard_aspect_ratio,
                 "image_size": args.image_size,
                 "reference_inputs": job["reference_inputs"],
+                "referenced_assets": job.get("referenced_assets", []),
+                "child_safety_guardrail": child_safety_enabled,
                 "image_path": "",
                 "width": None,
                 "height": None,
@@ -1104,6 +1386,8 @@ def run_storyboard_phase(
                 "aspect_ratio": args.storyboard_aspect_ratio,
                 "image_size": args.image_size,
                 "reference_inputs": job["reference_inputs"],
+                "referenced_assets": job.get("referenced_assets", []),
+                "child_safety_guardrail": child_safety_enabled,
                 "image_path": "",
                 "width": None,
                 "height": None,
@@ -1116,6 +1400,8 @@ def run_storyboard_phase(
                 "aspect_ratio": args.storyboard_aspect_ratio,
                 "image_size": args.image_size,
                 "reference_inputs": job["reference_inputs"],
+                "referenced_assets": job.get("referenced_assets", []),
+                "child_safety_guardrail": child_safety_enabled,
                 "image_path": "",
                 "width": None,
                 "height": None,
@@ -1169,6 +1455,7 @@ def main() -> int:
         args = parse_args()
         analysis = load_json(args.analysis_json)
         token = "" if args.dry_run else auth_token(args)
+        preflight = run_preflight_validation(analysis)
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1180,7 +1467,7 @@ def main() -> int:
         storyboard_path = output_dir / "storyboard.generated.json"
 
         if args.phase in {"assets", "all"}:
-            assets = run_assets_phase(args, analysis, token, output_dir)
+            assets = run_assets_phase(args, analysis, token, output_dir, preflight)
             write_json(str(assets_path), assets)
         else:
             if not args.assets_json:
@@ -1188,7 +1475,7 @@ def main() -> int:
             assets = load_json(args.assets_json)
 
         if args.phase in {"storyboard", "all"}:
-            storyboard = run_storyboard_phase(args, analysis, assets, token, output_dir)
+            storyboard = run_storyboard_phase(args, analysis, assets, token, output_dir, preflight)
             write_json(str(storyboard_path), storyboard)
 
         return 0

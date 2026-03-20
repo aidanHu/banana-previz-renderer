@@ -5,6 +5,10 @@
 - `asset_library`: 数组
 - `storyboard_script`: 数组
 
+可选顶层字段：
+
+- `style_descriptor`：会被拼接到所有最终 prompt
+
 资产字段最低要求：
 
 - `asset_tag`
@@ -19,5 +23,10 @@
 
 可选但推荐：
 
-- `referenced_assets`（用于把已生成资产图 URL 带进分镜请求）
+- `referenced_assets`（用于显式声明分镜引用的资产；同时也会校验其是否在 `asset_library` 中定义）
 
+Prompt 约定：
+
+- 分镜中如果使用 `@实体` 标记，必须能映射到 `asset_library.asset_tag`
+- 支持直接写完整 tag，例如 `@角色_Rumi`
+- 也支持简写别名，例如把 `@角色_Rumi` 写成 `@Rumi`

@@ -1,6 +1,6 @@
 # banana-previz-renderer
 
-用于“纯生图执行”的 skill。  
+用于带前置 guardrails 的“纯生图执行” skill。  
 输入上一个 skill 的结构化 JSON，批量生成角色/道具/场景图，以及后续分镜图。
 
 ## 当前默认
@@ -9,6 +9,14 @@
 - 默认尺寸：`1K`
 - 默认比例：资产 `16:9`，分镜 `9:16`
 - 默认风格：`photoreal-hq`
+
+## 当前 guardrails
+
+- 预检查 `storyboard_script` 中的 `@实体` 和 `referenced_assets`，未定义资产直接报错
+- 分镜请求前把 `@实体` 替换为对应资产的 `full_prompt_string`
+- 自动替换高风险内容词，并强制追加安全后缀
+- 命中儿童关键词的资产会触发儿童安全护栏
+- 全部请求都会追加统一光影质量基底
 
 ## 目录结构
 
@@ -66,6 +74,12 @@ python3 ./scripts/run_banana_pipeline.py \
 - 默认恢复模式是“只补明确可重试失败项”，不会重跑历史成功项和不明确项
 - 如需定向重生成，可用 `--character` / `--asset-id` / `--shot-id`
 - 如需全量重跑，显式传 `--force-rerun`
+
+## Prompt 处理规则
+
+- assets phase 会在资产原始描述后追加结构化出图约束、光影基底、风格描述和安全后缀
+- storyboard phase 会先展开 `@角色_XXX` / `@道具_XXX` / `@场景_XXX` 及其简写别名，再注入 guardrails
+- 如果分析 JSON 顶层包含 `style_descriptor`，会和 `--style` / `--style-extra` 一起拼接进最终 prompt
 
 ## 定向重生成
 
@@ -136,6 +150,12 @@ python3 ./scripts/run_banana_pipeline.py \
 - 分镜图：`001_shot_001.png`
 - 若同名文件已存在，会自动追加 `__v2`、`__v3`，不覆盖旧文件
 - `assets.generated.json` / `storyboard.generated.json` 也会按最终文件名排序
+
+输出 JSON 额外会记录：
+
+- `guardrails`
+- `child_safety_guardrail`
+- `referenced_assets`（storyboard）
 
 ## 备注
 
