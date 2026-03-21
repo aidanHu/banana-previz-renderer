@@ -21,7 +21,7 @@
 ## 目录结构
 
 - `scripts/run_banana_pipeline.py`：主执行脚本
-- `assets/character-refs/*`：内置角色参考图
+- `assets/character-refs/*`：内置角色参考图（已压缩为轻量 JPEG，便于发布）
 - `assets/identity-map.json`：repo 内默认角色映射
 - `assets/identity-map.example.json`：角色参考图映射示例
 - `references/api-summary.md`：API 摘要
@@ -37,8 +37,8 @@
 
 - 默认共享路径：`~/.codex/skills/banana-previz-renderer/assets/identity-map.json`
 - 不传 `--identity-map-json` 时，脚本会优先读取这个共享文件
-- repo 内也保留一份 `.agents/skills/banana-previz-renderer/assets/identity-map.json`，方便本地开发和迁移
-- 项目目录里的 `identity-map.json` 不再是默认约定；只有你显式传参时才会使用
+- 找不到共享文件时，会回退到当前 skill 根目录下的 `assets/identity-map.json`
+- identity-map 里的本地图片路径应写成相对 identity-map 文件自身的相对路径，例如 `./character-refs/RUMI.jpg`
 
 ## 常用命令
 
@@ -136,6 +136,7 @@ python3 ./scripts/run_banana_pipeline.py \
 
 - 只对“命名映射表中的角色”注入参考图（Rumi/Mira/Zoey/Jinu/Abby/Baby saja/Mystery/Romance）
 - 未命名角色（如 `@角色_Doctor`）不会自动上传参考图
+- 内置参考图已做发布前压缩；如需更高保真，可在 identity-map 中替换成你自己的本地原图
 
 ## 输出文件
 

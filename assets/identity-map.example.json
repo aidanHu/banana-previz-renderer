@@ -1,11 +1,11 @@
 {
   "@角色_Rumi": [
-    "./character-refs/RUMI.png"
+    "./character-refs/RUMI.jpg"
   ],
   "@角色_Mira": [
-    "./character-refs/MIRA.png"
+    "./character-refs/MIRA.jpg"
   ],
   "@角色_Jinu": [
-    "./character-refs/JINU.png"
+    "./character-refs/JINU.jpg"
   ]
 }

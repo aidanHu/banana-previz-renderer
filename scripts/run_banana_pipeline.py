@@ -359,6 +359,16 @@ def resolve_identity_map_path(path: str | None) -> Path | None:
     return None
 
 
+def normalize_identity_reference(ref: str, identity_map_path: Path) -> str:
+    ref = str(ref).strip()
+    if not ref or is_url(ref):
+        return ref
+    ref_path = Path(ref).expanduser()
+    if ref_path.is_absolute():
+        return str(ref_path)
+    return str((identity_map_path.parent / ref_path).resolve())
+
+
 def style_descriptor_from_analysis(analysis: dict) -> str:
     for key in ("style_descriptor", "global_style_descriptor", "styleDescriptor"):
         value = str(analysis.get(key, "") or "").strip()
@@ -807,9 +817,13 @@ def load_identity_map(path: str | None) -> dict[str, list[str]]:
     mapped: dict[str, list[str]] = {}
     for key, value in raw.items():
         if isinstance(value, str):
-            mapped[key] = [value]
+            mapped[key] = [normalize_identity_reference(value, resolved)]
         elif isinstance(value, list):
-            mapped[key] = [v for v in value if isinstance(v, str)]
+            mapped[key] = [
+                normalize_identity_reference(v, resolved)
+                for v in value
+                if isinstance(v, str) and str(v).strip()
+            ]
     return mapped
 
 
