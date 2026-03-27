@@ -20,11 +20,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Natural-language wrapper for banana previz regenerate commands."
     )
-    parser.add_argument("command", help="Natural-language command, e.g. 重生 Rumi 和 3、7 号镜头")
-    parser.add_argument("--analysis-json", required=True, help="Input analysis JSON path.")
+    parser.add_argument("command", help="Natural-language command, e.g. 重生 角色A 和 3、7 号镜头")
+    parser.add_argument("--analysis-json", required=True, help="Input analysis JSON path or analysis directory path.")
     parser.add_argument("--output-dir", default="./outputs", help="Output directory.")
     parser.add_argument("--assets-json", help="Existing assets.generated.json path for storyboard phase.")
-    parser.add_argument("--identity-map-json", help="Identity map JSON path.")
+    parser.add_argument("--identity-map-json", help="User-provided identity map JSON path for the current task.")
     parser.add_argument("--base-url", help="API base URL override.")
     parser.add_argument("--model", help="Gemini image model override.")
     parser.add_argument("--token", help="API token override.")
@@ -41,7 +41,18 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_json(path: str) -> dict:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    target = Path(path)
+    if target.is_dir():
+        assets_path = target / "assets.json"
+        storyboard_path = target / "storyboard.json"
+        payload: dict = {}
+        if assets_path.exists():
+            payload.update(json.loads(assets_path.read_text(encoding="utf-8")))
+        if storyboard_path.exists():
+            payload.update(json.loads(storyboard_path.read_text(encoding="utf-8")))
+        if payload:
+            return payload
+    return json.loads(target.read_text(encoding="utf-8"))
 
 
 def split_numbers(block: str) -> list[str]:
@@ -71,11 +82,15 @@ def parse_command(command: str, analysis: dict) -> dict:
         if not isinstance(item, dict):
             continue
         tag = str(item.get("asset_tag", "")).strip()
-        if tag.startswith("@角色_"):
-            role_name = tag[len("@角色_") :].split("_", 1)[0].strip()
+        if tag.startswith("@角色"):
+            role_name = tag[1:]
+            if "_" in role_name:
+                role_name = role_name.split("_", 1)[0].strip()
             if role_name:
                 known_roles.add(role_name)
         if tag and tag in text:
+            asset_tags.add(tag)
+        if tag.startswith("@") and tag[1:] in text:
             asset_tags.add(tag)
 
     for role_name in known_roles:

@@ -1,9 +1,14 @@
 # Input Contract
 
-本 skill 读取上一个 skill 的输出 JSON，期望至少有：
+本 skill 读取上一个 skill 的输出 JSON 或 analysis 目录，期望至少有：
 
 - `asset_library`: 数组
 - `storyboard_script`: 数组
+
+如果传入的是 analysis 目录，脚本会自动读取：
+
+- `assets.json`
+- `storyboard.json`
 
 可选顶层字段：
 
@@ -28,5 +33,5 @@
 Prompt 约定：
 
 - 分镜中如果使用 `@实体` 标记，必须能映射到 `asset_library.asset_tag`
-- 支持直接写完整 tag，例如 `@角色_Rumi`
-- 也支持简写别名，例如把 `@角色_Rumi` 写成 `@Rumi`
+- 支持直接写完整 tag，例如 `@角色A`
+- 也支持与 `asset_tag` 一致的简写内部引用，例如 `@场景A`、`@道具A`

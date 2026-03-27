@@ -33,16 +33,6 @@ STYLE_PRESETS = {
     "fantasy-epic": "奇幻史诗风格，宏大场景，丰富材质，强烈空间层次与氛围感。",
     "minimal-clean": "极简商业风格，画面干净，主体突出，背景克制，信息表达清晰。",
 }
-REFERENCE_ROLE_NAMES = [
-    "Rumi",
-    "Mira",
-    "Zoey",
-    "Jinu",
-    "Abby",
-    "Baby saja",
-    "Mystery",
-    "Romance",
-]
 ASSET_TAG_TOKEN_RE = re.compile(r"@[^\s,，。；;:：()（）]+")
 CHILD_KEYWORDS = (
     "儿童",
@@ -93,6 +83,60 @@ CHILD_SAFETY_SUFFIX = (
 GLOBAL_LIGHTING_SUFFIX = (
     "abundant natural light, bright and clear lighting, vibrant and rich colors, highly detailed and rich "
     "scene content, exquisite and nuanced character expressions and subtle fluid movements"
+)
+CHARACTER_SHEET_LIGHTING_SUFFIX = (
+    "bright high-key studio lighting, bright clean exposure, vivid colorful rendering, clean white background, "
+    "clear garment separation, editable and swappable clothing layers, newly redesigned wardrobe for the remake, "
+    "do not copy source/reference outfit directly, high clarity, no environment"
+)
+CHARACTER_PROMPT_FORBIDDEN_TERMS = (
+    "客厅",
+    "房间",
+    "室内",
+    "室外",
+    "街道",
+    "天空",
+    "地板",
+    "墙面",
+    "家具",
+    "沙发",
+    "桌子",
+    "茶几",
+    "窗",
+    "门",
+    "手机",
+    "杯子",
+    "桌面",
+    "栏杆",
+    "筷子",
+    "武器",
+    "包",
+    "椅子",
+    "车",
+    "道具",
+    "奔跑",
+    "追逐",
+    "打斗",
+    "战斗",
+    "刷墙",
+    "探路",
+    "平衡挑战",
+    "拿着",
+    "握着",
+    "挥舞",
+    "前倾",
+    "后撤",
+    "跳跃",
+)
+CHARACTER_REQUIREMENT_VARIANTS = (
+    "纯白背景/#FFFFFF/无环境元素，仅保留单角色主体，禁止任何道具，禁止剧情动作，服装可修改、服装可替换，光线明亮，色彩鲜艳。",
+    "纯白背景/#FFFFFF/无环境元素，仅保留单角色主体，禁止任何道具，禁止剧情动作，服装可修改、服装可替换，光线明亮，色彩鲜艳",
+    "纯白背景/#FFFFFF/无环境元素，仅保留单角色主体，禁止任何，禁止剧情动作，服装可修改、服装可替换，光线明亮，色彩鲜艳。",
+    "纯白背景/#FFFFFF/无环境元素，仅保留单角色主体，禁止任何，禁止剧情动作，服装可修改、服装可替换，光线明亮，色彩鲜艳",
+    "纯白背景/#FFFFFF/无环境元素，仅保留单角色主体，禁止任何道具，禁止剧情动作，服装可修改、服装可替换，必须为 remake 重新设计或明确改造服饰，不能直接照搬参考图原服装，光线明亮，色彩鲜艳。",
+    "纯白背景/#FFFFFF/无环境元素，仅保留单角色主体，禁止任何道具，禁止剧情动作，服装可修改、服装可替换，必须为 remake 重新设计或明确改造服饰，不能直接照搬参考图原服装，光线明亮，色彩鲜艳",
+    "纯白背景/#FFFFFF/无环境元素，仅保留单角色主体，禁止任何，禁止剧情动作，服装可修改、服装可替换，必须为 remake 重新设计或明确改造服饰，不能直接照搬参考图原服装，光线明亮，色彩鲜艳。",
+    "纯白背景/#FFFFFF/无环境元素，仅保留单角色主体，禁止任何，禁止剧情动作，服装可修改、服装可替换，必须为 remake 重新设计或明确改造服饰，不能直接照搬参考图原服装，光线明亮，色彩鲜艳",
 )
 
 
@@ -238,10 +282,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Pure image rendering pipeline from gemini-video-story-adapter JSON."
     )
-    parser.add_argument("--analysis-json", required=True, help="Input analysis JSON path.")
+    parser.add_argument("--analysis-json", required=True, help="Input analysis JSON path or analysis directory path.")
     parser.add_argument(
         "--identity-map-json",
-        help="JSON path: map asset tag to reference images (local paths or URLs). Defaults to the shared skill identity-map if omitted.",
+        help="JSON path: user-provided mapping from asset tag to reference images (local paths or URLs) for the current task.",
     )
     parser.add_argument(
         "--phase",
@@ -307,13 +351,13 @@ def parse_args() -> argparse.Namespace:
         "--asset-id",
         action="append",
         default=[],
-        help="Target specific asset IDs to generate. Repeatable, e.g. --asset-id @角色_Rumi",
+        help="Target specific asset IDs to generate. Repeatable, e.g. --asset-id @角色A",
     )
     parser.add_argument(
         "--character",
         action="append",
         default=[],
-        help="Target specific character role names to regenerate, e.g. --character Rumi",
+        help="Target specific character role names to regenerate, e.g. --character 角色A",
     )
     parser.add_argument(
         "--shot-id",
@@ -330,7 +374,30 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_json(path: str) -> dict:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    target = Path(path)
+    if target.is_dir():
+        assets_path = target / "assets.json"
+        storyboard_path = target / "storyboard.json"
+        if assets_path.exists() and storyboard_path.exists():
+            payload = load_analysis_payload_from_dir(str(target))
+            if payload:
+                return normalize_analysis_for_renderer(payload)
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    if isinstance(payload, dict) and ("asset_library" in payload or "storyboard_script" in payload):
+        return normalize_analysis_for_renderer(payload)
+    return payload
+
+
+def load_analysis_payload_from_dir(path: str) -> dict:
+    analysis_dir = Path(path)
+    assets_path = analysis_dir / "assets.json"
+    storyboard_path = analysis_dir / "storyboard.json"
+    payload: dict = {}
+    if assets_path.exists():
+        payload.update(json.loads(assets_path.read_text(encoding="utf-8")))
+    if storyboard_path.exists():
+        payload.update(json.loads(storyboard_path.read_text(encoding="utf-8")))
+    return payload
 
 
 def write_json(path: str, payload: dict) -> None:
@@ -338,25 +405,12 @@ def write_json(path: str, payload: dict) -> None:
     Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def default_identity_map_candidates() -> list[Path]:
-    skill_root = Path(__file__).resolve().parent.parent
-    env_path = os.getenv("BANANA_IDENTITY_MAP_JSON", "").strip()
-    candidates: list[Path] = []
-    if env_path:
-        candidates.append(Path(env_path).expanduser())
-    candidates.append(Path.home() / ".codex" / "skills" / "banana-previz-renderer" / "assets" / "identity-map.json")
-    candidates.append(skill_root / "assets" / "identity-map.json")
-    return candidates
-
-
 def resolve_identity_map_path(path: str | None) -> Path | None:
-    if path:
-        candidate = Path(path).expanduser()
-        return candidate if candidate.exists() else None
-    for candidate in default_identity_map_candidates():
-        if candidate.exists():
-            return candidate
-    return None
+    candidate_path = (path or os.getenv("BANANA_IDENTITY_MAP_JSON", "")).strip()
+    if not candidate_path:
+        return None
+    candidate = Path(candidate_path).expanduser()
+    return candidate if candidate.exists() else None
 
 
 def normalize_identity_reference(ref: str, identity_map_path: Path) -> str:
@@ -381,19 +435,417 @@ def asset_aliases(asset_tag: str) -> set[str]:
     aliases = {asset_tag}
     if not asset_tag.startswith("@"):
         return aliases
-    body = asset_tag[1:]
-    if "_" not in body:
+    body = asset_tag[1:].strip()
+    if not body:
         return aliases
-    _, raw_name = body.split("_", 1)
-    raw_name = raw_name.strip()
-    if not raw_name:
-        return aliases
-    aliases.add(f"@{raw_name}")
-    if asset_tag.startswith("@角色_"):
-        role_name = raw_name.split("_", 1)[0].strip()
-        if role_name:
-            aliases.add(f"@{role_name}")
+    aliases.add(body)
+    aliases.add(f"@{body}")
     return aliases
+
+
+def is_character_tag(asset_tag: str) -> bool:
+    return str(asset_tag or "").strip().startswith("@角色")
+
+
+def is_prop_tag(asset_tag: str) -> bool:
+    return str(asset_tag or "").strip().startswith("@道具")
+
+
+def is_scene_tag(asset_tag: str) -> bool:
+    return str(asset_tag or "").strip().startswith("@场景")
+
+
+def role_name_from_asset_tag(asset_tag: str) -> str:
+    tag = str(asset_tag or "").strip()
+    if not is_character_tag(tag):
+        return ""
+    raw = tag[1:]
+    if not raw:
+        return ""
+    return raw.split("_", 1)[0].strip()
+
+
+def tag_category_prefix(asset_tag: str) -> str:
+    if is_character_tag(asset_tag):
+        return "角色"
+    if is_prop_tag(asset_tag):
+        return "道具"
+    if is_scene_tag(asset_tag):
+        return "场景"
+    return ""
+
+
+def canonical_name_from_asset_tag(asset_tag: str) -> str:
+    tag = str(asset_tag or "").strip()
+    if not tag.startswith("@"):
+        return tag
+    raw = tag[1:]
+    if not raw:
+        return ""
+    return raw.split("_", 1)[0].strip()
+
+
+def preferred_story_token(asset_tag: str) -> str:
+    name = canonical_name_from_asset_tag(asset_tag)
+    return f"@{name}" if name else str(asset_tag or "").strip()
+
+
+def normalize_story_text_asset_tokens(text: str, asset_tags: list[str]) -> str:
+    normalized = str(text or "")
+    for asset_tag in sorted(asset_tags, key=len, reverse=True):
+        name = canonical_name_from_asset_tag(asset_tag)
+        if not name:
+            continue
+        normalized = normalized.replace(asset_tag, preferred_story_token(asset_tag))
+    return normalized
+
+
+def normalize_story_asset_refs(values: list[str], asset_tags: list[str]) -> list[str]:
+    tag_set = {str(tag).strip() for tag in asset_tags if str(tag).strip()}
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        token = str(value).strip()
+        if not token:
+            continue
+        canonical = token
+        if canonical in tag_set:
+            canonical = preferred_story_token(canonical)
+        elif token.startswith("@"):
+            for asset_tag in tag_set:
+                if canonical_name_from_asset_tag(asset_tag) == token[1:].split("_", 1)[0].strip():
+                    canonical = preferred_story_token(asset_tag)
+                    break
+        if canonical not in seen:
+            out.append(canonical)
+            seen.add(canonical)
+    return out
+
+
+def normalize_analysis_asset_tags(analysis: dict) -> dict:
+    asset_library = analysis.get("asset_library", [])
+    if not isinstance(asset_library, list):
+        return analysis
+    tag_map: dict[str, str] = {}
+    normalized_assets: list[dict] = []
+    for item in asset_library:
+        if not isinstance(item, dict):
+            normalized_assets.append(item)
+            continue
+        new_item = dict(item)
+        old_tag = str(item.get("asset_tag", "")).strip()
+        new_tag = preferred_story_token(old_tag) if old_tag.startswith("@") else old_tag
+        if old_tag and new_tag and old_tag != new_tag:
+            tag_map[old_tag] = new_tag
+            new_item["asset_tag"] = new_tag
+        normalized_assets.append(new_item)
+    analysis["asset_library"] = normalized_assets
+
+    storyboard_script = analysis.get("storyboard_script", [])
+    if isinstance(storyboard_script, list):
+        normalized_shots: list[dict] = []
+        normalized_tags = [item.get("asset_tag", "") for item in normalized_assets if isinstance(item, dict)]
+        for shot in storyboard_script:
+            if not isinstance(shot, dict):
+                normalized_shots.append(shot)
+                continue
+            new_shot = dict(shot)
+            for key in ("scene_tag",):
+                value = str(shot.get(key, "")).strip()
+                if value in tag_map:
+                    new_shot[key] = tag_map[value]
+            for key in ("used_asset_tags", "referenced_assets"):
+                raw = shot.get(key, [])
+                if isinstance(raw, list):
+                    remapped = [tag_map.get(str(v).strip(), str(v).strip()) for v in raw]
+                    new_shot[key] = normalize_story_asset_refs(remapped, normalized_tags)
+            for key in ("full_prompt_string", "first_frame_prompt", "scela_prompt"):
+                value = shot.get(key)
+                if isinstance(value, str):
+                    for old_tag, new_tag in tag_map.items():
+                        value = value.replace(old_tag, new_tag)
+                    new_shot[key] = normalize_story_text_asset_tokens(value, normalized_tags)
+            normalized_shots.append(new_shot)
+        analysis["storyboard_script"] = normalized_shots
+    return analysis
+
+
+def normalize_identity_map_keys(identity_map: dict[str, list[str]]) -> dict[str, list[str]]:
+    normalized: dict[str, list[str]] = {}
+    for key, value in identity_map.items():
+        normalized[preferred_story_token(str(key).strip())] = value
+    return normalized
+
+
+def canonical_asset_id_for_storage(asset_tag: str) -> str:
+    return str(asset_tag or "").strip()
+
+
+def display_asset_filename_label(asset_tag: str) -> str:
+    name = canonical_name_from_asset_tag(asset_tag)
+    return name or str(asset_tag or "").strip().lstrip("@")
+
+
+def result_asset_id_for_output(asset_tag: str) -> str:
+    return str(asset_tag or "").strip()
+
+
+def result_asset_reference_tag(asset_tag: str) -> str:
+    return str(asset_tag or "").strip()
+
+
+def result_story_reference_tags(asset_tags: list[str]) -> list[str]:
+    return [result_asset_reference_tag(tag) for tag in asset_tags]
+
+
+def result_story_text(text: str) -> str:
+    return str(text or "")
+
+
+def result_story_scene_tag(scene_tag: str) -> str:
+    return str(scene_tag or "").strip()
+
+
+def result_story_used_asset_tags(asset_tags: list[str]) -> list[str]:
+    return [str(tag).strip() for tag in asset_tags if str(tag).strip()]
+
+
+def result_story_referenced_assets(asset_tags: list[str]) -> list[str]:
+    return [str(tag).strip() for tag in asset_tags if str(tag).strip()]
+
+
+def result_identity_map_key(asset_tag: str) -> str:
+    return str(asset_tag or "").strip()
+
+
+def result_selector_role_name(asset_tag: str) -> str:
+    return role_name_from_asset_tag(asset_tag)
+
+
+def result_prompt_asset_tag(asset_tag: str) -> str:
+    return str(asset_tag or "").strip()
+
+
+def result_prompt_alias(asset_tag: str) -> str:
+    return preferred_story_token(asset_tag)
+
+
+def result_prompt_aliases(asset_tag: str) -> set[str]:
+    return asset_aliases(asset_tag)
+
+
+def normalize_analysis_for_renderer(analysis: dict) -> dict:
+    return normalize_analysis_asset_tags(analysis)
+
+
+def normalize_identity_map_for_renderer(identity_map: dict[str, list[str]]) -> dict[str, list[str]]:
+    return normalize_identity_map_keys(identity_map)
+
+
+def is_character_asset_type(asset_tag: str, asset_type: str) -> bool:
+    return is_character_tag(asset_tag) or "角色" in str(asset_type or "") or str(asset_type or "").lower() == "character"
+
+
+def is_prop_asset_type(asset_tag: str, asset_type: str) -> bool:
+    return is_prop_tag(asset_tag) or "道具" in str(asset_type or "") or str(asset_type or "").lower() == "prop"
+
+
+def is_scene_asset_type(asset_tag: str, asset_type: str) -> bool:
+    return is_scene_tag(asset_tag) or "场景" in str(asset_type or "") or str(asset_type or "").lower() == "scene"
+
+
+def normalized_story_asset_tag(asset_tag: str) -> str:
+    return preferred_story_token(asset_tag)
+
+
+def normalized_story_asset_tags(asset_tags: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for asset_tag in asset_tags:
+        token = normalized_story_asset_tag(asset_tag)
+        if token and token not in seen:
+            out.append(token)
+            seen.add(token)
+    return out
+
+
+def match_asset_tag_from_selector(selector: str, asset_tags: list[str]) -> str:
+    selector_norm = str(selector or "").strip().casefold()
+    for asset_tag in asset_tags:
+        tag = str(asset_tag or "").strip()
+        if tag.casefold() == selector_norm:
+            return tag
+        if canonical_name_from_asset_tag(tag).casefold() == selector_norm.lstrip("@").casefold():
+            return tag
+    return ""
+
+
+def matched_asset_tag(asset_tag: str) -> str:
+    return str(asset_tag or "").strip()
+
+
+def matched_role_name(asset_tag: str) -> str:
+    return role_name_from_asset_tag(asset_tag)
+
+
+def canonical_story_text(text: str, asset_tags: list[str]) -> str:
+    return normalize_story_text_asset_tokens(text, asset_tags)
+
+
+def canonical_story_refs(values: list[str], asset_tags: list[str]) -> list[str]:
+    return normalize_story_asset_refs(values, asset_tags)
+
+
+def renderer_story_asset_tag(asset_tag: str) -> str:
+    return preferred_story_token(asset_tag)
+
+
+def renderer_asset_storage_id(asset_tag: str) -> str:
+    return str(asset_tag or "").strip()
+
+
+def renderer_asset_display_label(asset_tag: str) -> str:
+    return display_asset_filename_label(asset_tag)
+
+
+def renderer_identity_map_key(asset_tag: str) -> str:
+    return preferred_story_token(asset_tag)
+
+
+def renderer_selector_role_name(asset_tag: str) -> str:
+    return role_name_from_asset_tag(asset_tag)
+
+
+def renderer_is_character(asset_tag: str, asset_type: str) -> bool:
+    return is_character_asset_type(asset_tag, asset_type)
+
+
+def renderer_is_prop(asset_tag: str, asset_type: str) -> bool:
+    return is_prop_asset_type(asset_tag, asset_type)
+
+
+def renderer_is_scene(asset_tag: str, asset_type: str) -> bool:
+    return is_scene_asset_type(asset_tag, asset_type)
+
+
+def renderer_story_text(text: str, asset_tags: list[str]) -> str:
+    return canonical_story_text(text, asset_tags)
+
+
+def renderer_story_refs(values: list[str], asset_tags: list[str]) -> list[str]:
+    return canonical_story_refs(values, asset_tags)
+
+
+def renderer_story_tag(asset_tag: str) -> str:
+    return renderer_story_asset_tag(asset_tag)
+
+
+def renderer_asset_id(asset_tag: str) -> str:
+    return renderer_asset_storage_id(asset_tag)
+
+
+def renderer_result_filename_label(asset_tag: str) -> str:
+    return renderer_asset_display_label(asset_tag)
+
+
+def renderer_ref_key(asset_tag: str) -> str:
+    return renderer_identity_map_key(asset_tag)
+
+
+def renderer_role_name(asset_tag: str) -> str:
+    return renderer_selector_role_name(asset_tag)
+
+
+def renderer_character_flag(asset_tag: str, asset_type: str) -> bool:
+    return renderer_is_character(asset_tag, asset_type)
+
+
+def renderer_prop_flag(asset_tag: str, asset_type: str) -> bool:
+    return renderer_is_prop(asset_tag, asset_type)
+
+
+def renderer_scene_flag(asset_tag: str, asset_type: str) -> bool:
+    return renderer_is_scene(asset_tag, asset_type)
+
+
+def renderer_output_story_text(text: str, asset_tags: list[str]) -> str:
+    return renderer_story_text(text, asset_tags)
+
+
+def renderer_output_story_refs(values: list[str], asset_tags: list[str]) -> list[str]:
+    return renderer_story_refs(values, asset_tags)
+
+
+def renderer_output_story_tag(asset_tag: str) -> str:
+    return renderer_story_tag(asset_tag)
+
+
+def renderer_output_asset_id(asset_tag: str) -> str:
+    return renderer_asset_id(asset_tag)
+
+
+def renderer_output_filename_label(asset_tag: str) -> str:
+    return renderer_result_filename_label(asset_tag)
+
+
+def renderer_output_ref_key(asset_tag: str) -> str:
+    return renderer_ref_key(asset_tag)
+
+
+def renderer_output_role_name(asset_tag: str) -> str:
+    return renderer_role_name(asset_tag)
+
+
+def renderer_output_is_character(asset_tag: str, asset_type: str) -> bool:
+    return renderer_character_flag(asset_tag, asset_type)
+
+
+def renderer_output_is_prop(asset_tag: str, asset_type: str) -> bool:
+    return renderer_prop_flag(asset_tag, asset_type)
+
+
+def renderer_output_is_scene(asset_tag: str, asset_type: str) -> bool:
+    return renderer_scene_flag(asset_tag, asset_type)
+
+
+def renderer_output_prompt_text(text: str, asset_tags: list[str]) -> str:
+    return renderer_output_story_text(text, asset_tags)
+
+
+def renderer_output_prompt_refs(values: list[str], asset_tags: list[str]) -> list[str]:
+    return renderer_output_story_refs(values, asset_tags)
+
+
+def renderer_output_prompt_tag(asset_tag: str) -> str:
+    return renderer_output_story_tag(asset_tag)
+
+
+def renderer_output_prompt_asset_id(asset_tag: str) -> str:
+    return renderer_output_asset_id(asset_tag)
+
+
+def renderer_output_prompt_filename_label(asset_tag: str) -> str:
+    return renderer_output_filename_label(asset_tag)
+
+
+def renderer_output_prompt_ref_key(asset_tag: str) -> str:
+    return renderer_output_ref_key(asset_tag)
+
+
+def renderer_output_prompt_role_name(asset_tag: str) -> str:
+    return renderer_output_role_name(asset_tag)
+
+
+def renderer_output_prompt_is_character(asset_tag: str, asset_type: str) -> bool:
+    return renderer_output_is_character(asset_tag, asset_type)
+
+
+def renderer_output_prompt_is_prop(asset_tag: str, asset_type: str) -> bool:
+    return renderer_output_is_prop(asset_tag, asset_type)
+
+
+def renderer_output_prompt_is_scene(asset_tag: str, asset_type: str) -> bool:
+    return renderer_output_is_scene(asset_tag, asset_type)
 
 
 def build_asset_prompt_lookup(analysis: dict) -> tuple[dict[str, str], dict[str, str]]:
@@ -813,13 +1265,14 @@ def load_identity_map(path: str | None) -> dict[str, list[str]]:
     resolved = resolve_identity_map_path(path)
     if not resolved:
         return {}
-    raw = load_json(str(resolved))
+    raw = json.loads(Path(resolved).read_text(encoding="utf-8"))
     mapped: dict[str, list[str]] = {}
     for key, value in raw.items():
+        normalized_key = preferred_story_token(str(key).strip())
         if isinstance(value, str):
-            mapped[key] = [normalize_identity_reference(value, resolved)]
+            mapped[normalized_key] = [normalize_identity_reference(value, resolved)]
         elif isinstance(value, list):
-            mapped[key] = [
+            mapped[normalized_key] = [
                 normalize_identity_reference(v, resolved)
                 for v in value
                 if isinstance(v, str) and str(v).strip()
@@ -827,27 +1280,13 @@ def load_identity_map(path: str | None) -> dict[str, list[str]]:
     return mapped
 
 
-def role_name_from_asset_tag(asset_tag: str) -> str:
-    prefix = "@角色_"
-    if not asset_tag.startswith(prefix):
-        return ""
-    raw = asset_tag[len(prefix) :]
-    if not raw:
-        return ""
-    # @角色_Rumi_冰 -> Rumi
-    return raw.split("_", 1)[0].strip()
-
-
-def filter_reference_inputs(asset_id: str, asset_type: str, identity_map: dict[str, list[str]]) -> list[str]:
+def filter_reference_inputs(asset_id: str, asset_type: str, identity_map: dict[str, list[str]], *, allow_character_refs: bool = False) -> list[str]:
     refs = identity_map.get(asset_id, [])
     if not refs:
         return []
     t = str(asset_type or "")
-    # Role references are only allowed for explicitly named canonical roles.
     if "角色" in t or t.lower() == "character":
-        role_name = role_name_from_asset_tag(asset_id)
-        if role_name not in REFERENCE_ROLE_NAMES:
-            return []
+        return refs if allow_character_refs else []
     return refs
 
 
@@ -920,24 +1359,59 @@ def build_style_suffix(args: argparse.Namespace, analysis: dict) -> str:
 
 def build_asset_type_constraints(asset_type: str) -> str:
     t = str(asset_type or "")
-    if "角色" in t:
+    if "角色" in t or t.lower() == "character":
         return (
-            "结构化出图要求：同一张图包含正面、侧面、背面和正面半身特写四视图；"
-            "纯白背景（#FFFFFF），仅保留单角色主体，不得出现任何场景元素、贴纸或其他人物；"
+            "结构化出图要求：这是纯角色设定板，不是剧照、不是海报、不是生活照；"
+            "同一张图包含正面全身、侧面全身、背面全身三视图，各视图必须明显分离且绝对不能重叠；"
+            "纯白背景（#FFFFFF），仅允许单角色主体；"
+            "禁止任何场景元素、家具、墙面、地板、天空、室内外环境、贴纸、其他人物；"
+            "禁止手持任何剧情道具，禁止剧情动作、任务动作、叙事性姿态；"
+            "服装必须是可修改、可替换、可单独调整的服装层，且在 remake 中必须重新设计或明确改造，不能直接照搬参考图原服装；"
+            "光线必须明亮、均匀、通透，色彩必须鲜艳干净；"
             "左上角标注对应角色名且不得遮挡主体。"
         )
     if "道具" in t:
         return (
-            "结构化出图要求：同一张图包含正视、侧视、俯视和特写细节四视图；"
+            "结构化出图要求：同一张图包含正视、侧视、背视三视图；"
             "纯白背景（#FFFFFF），仅保留单道具主体，不得出现人体、手部、模特、桌面或未定义场景元素；"
             "服装类道具必须以单件产品形态展示。"
         )
     if "场景" in t:
         return (
-            "结构化出图要求：同一张图包含全景、局部细节、俯视平面和核心地标特写四视图；"
+            "结构化出图要求：同一张图包含全景、俯视、局部细节三视图；"
             "作为环境设计稿展示，不加入未定义角色或干扰元素。"
         )
     return ""
+
+
+def strip_character_requirement_variants(text: str) -> str:
+    normalized = str(text or "")
+    for variant in CHARACTER_REQUIREMENT_VARIANTS:
+        normalized = normalized.replace(variant, "")
+    return re.sub(r"\s{2,}", " ", normalized).strip()
+
+
+def normalize_character_asset_prompt(prompt: str) -> str:
+    normalized = strip_character_requirement_variants(prompt)
+    for term in CHARACTER_PROMPT_FORBIDDEN_TERMS:
+        normalized = normalized.replace(term, "")
+    replacements = {
+        "可与产生抓握": "基础手部姿态清楚",
+        "可与配合": "基础姿态稳定",
+        "适合在中的": "适合角色设定展示的",
+        "适合中的": "适合角色设定展示的",
+        "适合做": "适合表现",
+        "适合": "适合表现",
+        "动作轻快": "姿态轻盈",
+        "动作可读性强": "基础姿态可读性强",
+        "快速移动": "自然站姿与轻微动作变化",
+        "动态位移": "基础动作变化",
+        "平衡": "稳定站姿",
+        "探路": "观察",
+    }
+    for old, new in replacements.items():
+        normalized = normalized.replace(old, new)
+    return re.sub(r"\s{2,}", " ", normalized).strip()
 
 
 def _run_jobs_with_retry(
@@ -1075,17 +1549,23 @@ def run_assets_phase(
         )
 
     def worker(idx: int, job: dict) -> dict:
-        type_constraints = build_asset_type_constraints(job.get("type", ""))
+        asset_type = str(job.get("type", ""))
+        is_character = "角色" in asset_type or asset_type.lower() == "character"
+        type_constraints = build_asset_type_constraints(asset_type)
         child_safety_enabled = job["id"] in child_assets
+        base_prompt = normalize_character_asset_prompt(job["prompt"]) if is_character else job["prompt"]
+        lighting_suffix = CHARACTER_SHEET_LIGHTING_SUFFIX if is_character else GLOBAL_LIGHTING_SUFFIX
         prompt_base = (
-            f"{job['prompt']}\n\n"
+            f"{base_prompt}\n\n"
             f"{type_constraints}\n"
             f"画面比例：{args.asset_aspect_ratio}。\n"
-            f"光影质量基底：{GLOBAL_LIGHTING_SUFFIX}\n"
+            f"光影质量基底：{lighting_suffix}\n"
             f"风格要求：{style_suffix}"
         )
+        if is_character:
+            prompt_base += "\n参考图若存在，仅用于脸部身份参考，忽略其姿势、背景与衣服。"
         prompt = sanitize_prompt_content(prompt_base, child_safety_enabled)
-        reference_paths = filter_reference_inputs(job["id"], str(job.get("type", "")), identity_map)
+        reference_paths = filter_reference_inputs(job["id"], asset_type, identity_map, allow_character_refs=True)
         if args.dry_run:
             return finalize_result({
                 "id": job["id"],

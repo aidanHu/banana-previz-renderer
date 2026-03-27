@@ -21,9 +21,9 @@
 ## 目录结构
 
 - `scripts/run_banana_pipeline.py`：主执行脚本
-- `assets/character-refs/*`：内置角色参考图（已压缩为轻量 JPEG，便于发布）
-- `assets/identity-map.json`：repo 内默认角色映射
-- `assets/identity-map.example.json`：角色参考图映射示例
+- `assets/character-refs/*`：历史内置角色参考图资源（不再作为默认输入）
+- `assets/identity-map.json`：历史示例映射（不再默认自动加载）
+- `assets/identity-map.example.json`：用户参考图映射示例
 - `references/api-summary.md`：API 摘要
 - `references/input-contract.md`：输入契约说明
 
@@ -31,14 +31,24 @@
 
 - 必填：`YUNWU_API_TOKEN`
 - 可选：`YUNWU_BASE_URL`（默认 `https://yunwu.ai`）
-- 可选：`BANANA_IDENTITY_MAP_JSON`（覆盖默认共享映射路径）
+- 可选：`BANANA_IDENTITY_MAP_JSON`（为当前任务提供用户自定义参考图映射 JSON）
 
-## 共享 identity-map
+## 角色参考图映射
 
-- 默认共享路径：`~/.codex/skills/banana-previz-renderer/assets/identity-map.json`
-- 不传 `--identity-map-json` 时，脚本会优先读取这个共享文件
-- 找不到共享文件时，会回退到当前 skill 根目录下的 `assets/identity-map.json`
-- identity-map 里的本地图片路径应写成相对 identity-map 文件自身的相对路径，例如 `./character-refs/RUMI.jpg`
+- 推荐显式传 `--identity-map-json /path/to/role-refs.json`
+- 如果未传 `--identity-map-json`，脚本不会默认加载内置角色参考图
+- `BANANA_IDENTITY_MAP_JSON` 仅作为当前任务的可选映射来源，不再代表共享默认角色库
+- identity-map 里的本地图片路径可以使用绝对路径；如使用相对路径，则相对 identity-map 文件自身解析
+- 推荐映射格式示例：
+
+```json
+{
+  "@角色A": ["/absolute/path/to/role-a.jpg"],
+  "@角色B": ["/absolute/path/to/role-b.jpg"]
+}
+```
+
+- 若某角色未提供参考图，脚本仍会生成该角色资产，只是不注入参考图
 
 ## 常用命令
 
@@ -46,8 +56,9 @@
 
 ```bash
 python3 ./scripts/run_banana_pipeline.py \
-  --analysis-json ./analysis.json \
+  --analysis-json ./analysis \
   --phase assets \
+  --identity-map-json ./role-refs.json \
   --output-dir ./outputs \
   --style photoreal-hq \
   --image-size 1K
@@ -57,7 +68,7 @@ python3 ./scripts/run_banana_pipeline.py \
 
 ```bash
 python3 ./scripts/run_banana_pipeline.py \
-  --analysis-json ./analysis.json \
+  --analysis-json ./analysis \
   --phase storyboard \
   --assets-json ./outputs/assets.generated.json \
   --output-dir ./outputs
@@ -78,7 +89,7 @@ python3 ./scripts/run_banana_pipeline.py \
 ## Prompt 处理规则
 
 - assets phase 会在资产原始描述后追加结构化出图约束、光影基底、风格描述和安全后缀
-- storyboard phase 会先展开 `@角色_XXX` / `@道具_XXX` / `@场景_XXX` 及其简写别名，再注入 guardrails
+- storyboard phase 会先展开 `@角色A` / `@道具A` / `@场景A` 这类内部资产 tag，再注入 guardrails
 - 如果分析 JSON 顶层包含 `style_descriptor`，会和 `--style` / `--style-extra` 一起拼接进最终 prompt
 
 ## 定向重生成
@@ -90,8 +101,9 @@ python3 ./scripts/run_banana_pipeline.py \
 ```bash
 python3 ./scripts/run_banana_command.py \
   --analysis-json ./analysis.json \
+  --identity-map-json ./role-refs.json \
   --output-dir ./outputs \
-  "重生 Rumi 和 3、7 号镜头"
+  "重生 角色A 和 3、7 号镜头"
 ```
 
 ```bash
@@ -107,8 +119,9 @@ python3 ./scripts/run_banana_command.py \
 python3 ./scripts/run_banana_pipeline.py \
   --analysis-json ./analysis.json \
   --phase assets \
+  --identity-map-json ./role-refs.json \
   --output-dir ./outputs \
-  --character Rumi,Jinu
+  --character 角色A,角色B
 ```
 
 只重生成指定资产：
@@ -117,8 +130,9 @@ python3 ./scripts/run_banana_pipeline.py \
 python3 ./scripts/run_banana_pipeline.py \
   --analysis-json ./analysis.json \
   --phase assets \
+  --identity-map-json ./role-refs.json \
   --output-dir ./outputs \
-  --asset-id @角色_Rumi,@场景_水族馆
+  --asset-id @角色A,@场景A
 ```
 
 只重生成指定分镜：
@@ -134,9 +148,11 @@ python3 ./scripts/run_banana_pipeline.py \
 
 ## 参考图策略
 
-- 只对“命名映射表中的角色”注入参考图（Rumi/Mira/Zoey/Jinu/Abby/Baby saja/Mystery/Romance）
-- 未命名角色（如 `@角色_Doctor`）不会自动上传参考图
-- 内置参考图已做发布前压缩；如需更高保真，可在 identity-map 中替换成你自己的本地原图
+- 角色参考图完全来自用户提供的 identity-map JSON
+- 只要映射里存在对应 `asset_tag`（如 `@角色A`），该角色就会注入参考图
+- 未在映射中声明的角色不会自动上传任何参考图
+- 如需更高保真，可在当前任务的 identity-map 中提供你自己的本地原图
+- 默认不再自动使用 skill 内置角色参考图
 
 ## 输出文件
 
@@ -147,7 +163,7 @@ python3 ./scripts/run_banana_pipeline.py \
 
 图片文件名规则：
 
-- 资产图：`001_角色_Rumi.png`、`009_场景_水族馆.png`
+- 资产图：`001_角色A.png`、`009_场景A.png`
 - 分镜图：`001_shot_001.png`
 - 若同名文件已存在，会自动追加 `__v2`、`__v3`，不覆盖旧文件
 - `assets.generated.json` / `storyboard.generated.json` 也会按最终文件名排序

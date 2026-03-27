@@ -31,9 +31,9 @@ description: >
 
 1. 从 `asset_library` 读取 `full_prompt_string` 或 `visual_anchor`。
 2. 按资产类型追加结构化出图约束：
-   - 角色：四视图、纯白底、单角色主体。
-   - 道具：多角度四视图、纯白底、仅展示道具主体。
-   - 场景：全景/细节/俯视/地标特写四视图。
+   - 角色：三视图、纯白底、单角色主体。
+   - 道具：三视图、纯白底、仅展示道具主体。
+   - 场景：全景/俯视/细节三视图。
 3. 自动追加：
    - 全局光影质量基底
    - style descriptor / style preset
@@ -57,7 +57,7 @@ description: >
 当前实现落地的是下面这些规则：
 
 - 资产全覆盖：未定义的 `@实体` 或非法 `referenced_assets` 会在预检查阶段直接失败。
-- Prompt 替换：分镜 prompt 中的 `@角色_XXX` / `@道具_XXX` / `@场景_XXX`，以及对应简写别名，会在提交前替换为资产完整描述。
+- Prompt 替换：分镜 prompt 中的 `@角色A` / `@道具A` / `@场景A` 这类内部资产 tag，会在提交前替换为资产完整描述。
 - 内容安全：会替换血腥、真实灾难等高风险词，并始终追加 anatomy-safe 后缀。
 - 交通/撞击场景：检测到碰撞语义时，额外追加软体物理/非真实冲击后缀。
 - 儿童安全：如果资产描述命中儿童关键词，相关 prompt 会自动追加儿童表情、肢体、环境、服装和特效护栏。
@@ -72,10 +72,10 @@ description: >
 可选：
 
 - `YUNWU_BASE_URL`（默认 `https://yunwu.ai`）
-- `BANANA_IDENTITY_MAP_JSON`（覆盖默认共享 identity-map 路径）
+- `BANANA_IDENTITY_MAP_JSON`（可选；为当前任务提供用户自定义参考图映射 JSON）
 - `--model`（默认 `gemini-3.1-flash-image-preview`）
 - `--image-size`（默认 `1K`）
-- `--identity-map-json`（角色/道具基础图映射，可选；不传时按共享路径查找）
+- `--identity-map-json`（用户提供的角色/道具参考图映射 JSON；不传则不注入任何参考图）
 - `--concurrency`（默认 `3`）
 - `--max-retries`（默认 `2`）
 - `--resolution-rule`（默认 `long-edge`）
@@ -117,6 +117,7 @@ export YUNWU_BASE_URL="https://yunwu.ai"
 python3 ./scripts/run_banana_pipeline.py \
   --analysis-json ./analysis.json \
   --phase assets \
+  --identity-map-json ./role-refs.json \
   --output-dir ./outputs \
   --style photoreal-hq \
   --image-size 1K
@@ -128,12 +129,13 @@ python3 ./scripts/run_banana_pipeline.py \
   --assets-json ./outputs/assets.generated.json \
   --output-dir ./outputs
 
-# 3) 只重生成指定角色
+# 3) 用用户提供的角色参考图生成资产
 python3 ./scripts/run_banana_pipeline.py \
   --analysis-json ./analysis.json \
   --phase assets \
+  --identity-map-json ./role-refs.json \
   --output-dir ./outputs \
-  --character Rumi,Jinu
+  --character 角色A,角色B
 ```
 
 ## Output Files
